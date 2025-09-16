@@ -1,0 +1,33 @@
+version: '3.9'
+
+services:
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: repricer
+      POSTGRES_PASSWORD: repricer
+      POSTGRES_DB: repricer
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U repricer']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build: .
+    command: uvicorn sdtrepricer.app:app --host 0.0.0.0 --port 8000 --reload
+    volumes:
+      - ./:/app
+    environment:
+      DATABASE_URL: postgresql+asyncpg://repricer:repricer@db:5432/repricer
+      FTP_ROOT: /app/ftp_feeds
+    ports:
+      - '8000:8000'
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  db-data:
