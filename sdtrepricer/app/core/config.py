@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     step_up_value: float = 2.0
     step_up_interval_hours: float = 6.0
     sp_api_endpoint: str = "https://sellingpartnerapi-eu.amazon.com"
+    test_mode: bool = False
 
 
 @lru_cache

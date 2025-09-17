@@ -58,6 +58,51 @@ function populateSettings(settings) {
   form.step_up_type.value = settings.step_up_type;
   form.step_up_value.value = settings.step_up_value;
   form.step_up_interval_hours.value = settings.step_up_interval_hours;
+  form.test_mode.checked = Boolean(settings.test_mode);
+}
+
+function formatPrice(value) {
+  if (value === null || value === undefined) {
+    return '—';
+  }
+  const number = Number(value);
+  if (Number.isNaN(number)) {
+    return value;
+  }
+  return number.toFixed(2);
+}
+
+function renderSimulations(events) {
+  const table = document.querySelector('#simulation-table tbody');
+  if (!table) {
+    return;
+  }
+  table.innerHTML = '';
+  if (!events || events.length === 0) {
+    const row = document.createElement('tr');
+    const cell = document.createElement('td');
+    cell.colSpan = 6;
+    cell.textContent = 'No simulated price updates yet.';
+    row.appendChild(cell);
+    table.appendChild(row);
+    return;
+  }
+  events.forEach((event) => {
+    const row = document.createElement('tr');
+    const contextCell = document.createElement('td');
+    const contextPre = document.createElement('pre');
+    contextPre.textContent = JSON.stringify(event.context || {}, null, 2);
+    contextCell.appendChild(contextPre);
+    row.innerHTML = `
+      <td>${new Date(event.created_at).toLocaleString()}</td>
+      <td>${event.marketplace_code}</td>
+      <td>${event.sku}</td>
+      <td>${formatPrice(event.old_price)}</td>
+      <td>${formatPrice(event.new_price)}</td>
+    `;
+    row.appendChild(contextCell);
+    table.appendChild(row);
+  });
 }
 
 async function refreshDashboard() {
@@ -67,6 +112,7 @@ async function refreshDashboard() {
     renderHealth(data.health);
     renderAlerts(data.alerts);
     populateSettings(data.settings);
+    renderSimulations(data.simulated_events);
   } catch (error) {
     console.error('Failed to refresh dashboard', error);
   }
@@ -80,6 +126,7 @@ async function handleSettings(event) {
     step_up_type: form.step_up_type.value,
     step_up_value: parseFloat(form.step_up_value.value),
     step_up_interval_hours: parseFloat(form.step_up_interval_hours.value),
+    test_mode: form.test_mode.checked,
   };
   try {
     await fetchJSON(`${API_BASE}/settings`, {
@@ -148,10 +195,39 @@ async function handleBulkUpload(event) {
   }
 }
 
+async function handleTestDataUpload(event, endpoint) {
+  event.preventDefault();
+  const formData = new FormData(event.target);
+  const marketplace = formData.get('marketplace_code');
+  try {
+    const response = await fetch(
+      `${API_BASE}/test-data/${endpoint}?marketplace_code=${encodeURIComponent(marketplace)}`,
+      {
+        method: 'POST',
+        body: formData,
+      },
+    );
+    if (!response.ok) {
+      throw new Error(await response.text());
+    }
+    const payload = await response.json();
+    document.getElementById('test-mode-status').textContent = `Uploaded ${payload.records} records for ${marketplace}`;
+    await refreshDashboard();
+  } catch (error) {
+    document.getElementById('test-mode-status').textContent = `Upload failed: ${error.message}`;
+  }
+}
+
 document.getElementById('settings-form').addEventListener('submit', handleSettings);
 document.getElementById('manual-reprice-form').addEventListener('submit', handleManualReprice);
 document.getElementById('manual-price-form').addEventListener('submit', handleManualPrice);
 document.getElementById('bulk-upload-form').addEventListener('submit', handleBulkUpload);
+document
+  .getElementById('test-floor-form')
+  .addEventListener('submit', (event) => handleTestDataUpload(event, 'floor'));
+document
+  .getElementById('test-competitor-form')
+  .addEventListener('submit', (event) => handleTestDataUpload(event, 'competitors'));
 
 refreshDashboard();
 setInterval(refreshDashboard, 15000);

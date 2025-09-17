@@ -131,6 +131,34 @@ class Alert(Base):
     acknowledged: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
+class TestFloorPrice(Base):
+    """Uploaded floor price data used while running in test mode."""
+
+    __tablename__ = "test_floor_prices"
+    __table_args__ = (UniqueConstraint("marketplace_code", "sku", name="uq_test_floor_marketplace_sku"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    marketplace_code: Mapped[str] = mapped_column(String(4), nullable=False)
+    sku: Mapped[str] = mapped_column(String(64), nullable=False)
+    asin: Mapped[str] = mapped_column(String(16), nullable=False)
+    min_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    min_business_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+
+
+class TestCompetitorOffer(Base):
+    """Uploaded competitor offers used while running in test mode."""
+
+    __tablename__ = "test_competitor_offers"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    marketplace_code: Mapped[str] = mapped_column(String(4), nullable=False)
+    asin: Mapped[str] = mapped_column(String(16), nullable=False)
+    seller_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    is_buy_box: Mapped[bool] = mapped_column(Boolean, default=False)
+    fulfillment_type: Mapped[str] = mapped_column(String(16), nullable=False, default="UNKNOWN")
+
+
 class SystemSetting(Base):
     """Mutable system wide settings exposed via the UI."""
 

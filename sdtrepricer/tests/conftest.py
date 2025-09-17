@@ -7,6 +7,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from sdtrepricer.app.models import Base
 
+collect_ignore = ["../app/services/test_data.py", "../app/api/test_data.py"]
+collect_ignore_glob = ["../app/services/test_*.py", "../app/api/test_*.py"]
+
 
 @pytest.fixture
 async def db_session() -> AsyncIterator[AsyncSession]:
