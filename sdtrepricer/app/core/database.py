@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 
+from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
 from .config import settings
@@ -46,3 +47,28 @@ async def init_db() -> None:
     engine = get_engine()
     async with engine.begin() as conn:  # type: ignore[arg-type]
         await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(_apply_repricing_profile_migration)
+
+
+def _apply_repricing_profile_migration(connection) -> None:
+    """Backfill ``repricing_profile_id`` column for pre-existing ``skus`` tables."""
+
+    inspector = inspect(connection)
+    columns = {column["name"] for column in inspector.get_columns("skus")}
+    if "repricing_profile_id" in columns:
+        return
+
+    connection.execute(text("ALTER TABLE skus ADD COLUMN repricing_profile_id INTEGER"))
+
+    if connection.dialect.name == "sqlite":
+        # SQLite cannot add foreign key constraints via ALTER TABLE; rely on
+        # application-level integrity for in-memory fixtures.
+        return
+
+    connection.execute(
+        text(
+            "ALTER TABLE skus ADD CONSTRAINT fk_skus_repricing_profile_id "
+            "FOREIGN KEY (repricing_profile_id) REFERENCES repricing_profiles(id) "
+            "ON DELETE SET NULL"
+        )
+    )

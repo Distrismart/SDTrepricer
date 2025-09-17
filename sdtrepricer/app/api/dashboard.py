@@ -67,7 +67,7 @@ async def get_dashboard(
             severity=alert.severity,
             created_at=alert.created_at,
             acknowledged=alert.acknowledged,
-            metadata=alert.metadata,
+            metadata=alert.metadata_payload,
         )
         for alert in alerts_rows
     ]
@@ -77,8 +77,10 @@ async def get_dashboard(
                 SystemSetting.key.in_(
                     {
                         "max_price_change_percent",
-                        "step_up_percentage",
+                        "step_up_type",
+                        "step_up_value",
                         "step_up_interval_hours",
+                        "step_up_percentage",
                         "test_mode",
                     }
                 )
@@ -90,8 +92,19 @@ async def get_dashboard(
         max_price_change_percent=float(
             settings_map.get("max_price_change_percent", settings.max_price_change_percent)
         ),
-        step_up_percentage=float(settings_map.get("step_up_percentage", 2.0)),
-        step_up_interval_hours=int(settings_map.get("step_up_interval_hours", 6)),
+        step_up_type=str(
+            settings_map.get("step_up_type", settings.step_up_type)
+            or settings.step_up_type
+        ).lower(),
+        step_up_value=float(
+            settings_map.get(
+                "step_up_value",
+                settings_map.get("step_up_percentage", settings.step_up_value),
+            )
+        ),
+        step_up_interval_hours=float(
+            settings_map.get("step_up_interval_hours", settings.step_up_interval_hours)
+        ),
         test_mode=(
             settings.test_mode
             if "test_mode" not in settings_map
@@ -106,6 +119,7 @@ async def get_dashboard(
             .order_by(PriceEvent.created_at.desc())
             .limit(20)
     )
+
     simulated_events = [
         SimulatedPriceOutcome(
             sku=sku.sku,

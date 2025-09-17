@@ -16,7 +16,8 @@ router = APIRouter()
 
 SETTING_KEYS = {
     "max_price_change_percent": "max_price_change_percent",
-    "step_up_percentage": "step_up_percentage",
+    "step_up_type": "step_up_type",
+    "step_up_value": "step_up_value",
     "step_up_interval_hours": "step_up_interval_hours",
     "test_mode": "test_mode",
 }
@@ -29,9 +30,23 @@ async def read_settings(session: AsyncSession = Depends(get_db)) -> RepricerSett
     try:
         test_mode_value = mapping.get("test_mode")
         return RepricerSettings(
-            max_price_change_percent=float(mapping.get("max_price_change_percent", 20.0)),
-            step_up_percentage=float(mapping.get("step_up_percentage", 2.0)),
-            step_up_interval_hours=int(mapping.get("step_up_interval_hours", 6)),
+            max_price_change_percent=float(
+                mapping.get("max_price_change_percent", settings.max_price_change_percent)
+            ),
+            step_up_type=str(
+                mapping.get("step_up_type", settings.step_up_type)
+                or settings.step_up_type
+            ).lower(),
+            step_up_value=float(
+                mapping.get(
+                    "step_up_value",
+                    mapping.get("step_up_percentage", settings.step_up_value),
+                )
+            ),
+            step_up_interval_hours=float(
+                mapping.get("step_up_interval_hours", settings.step_up_interval_hours)
+            ),
+
             test_mode=(
                 settings.test_mode
                 if test_mode_value is None
