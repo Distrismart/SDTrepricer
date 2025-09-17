@@ -91,6 +91,30 @@ form input {
   border-radius: 8px;
 }
 
+form textarea {
+  margin-top: 0.25rem;
+  padding: 0.5rem;
+  border: 1px solid #cbd5f5;
+  border-radius: 8px;
+  resize: vertical;
+}
+
+.profile-management {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1rem;
+}
+
+.profile-details p {
+  margin: 0.2rem 0;
+}
+
+#profile-sku-list {
+  max-height: 200px;
+  overflow-y: auto;
+  padding-left: 1rem;
+}
+
 button {
   padding: 0.6rem 1rem;
   border: none;

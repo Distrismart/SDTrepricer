@@ -24,7 +24,9 @@ async def manual_reprice(
     scheduler = getattr(request.app.state, "scheduler", None)
     if not scheduler:
         raise HTTPException(status_code=503, detail="Scheduler not running")
-    await scheduler.trigger_marketplace(payload.marketplace_code, reason="manual")
+    await scheduler.trigger_marketplace(
+        payload.marketplace_code, reason="manual", profile_id=payload.profile_id
+    )
     return {"status": "scheduled"}
 
 

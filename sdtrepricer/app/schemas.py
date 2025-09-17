@@ -51,6 +51,7 @@ class ManualRepriceRequest(BaseModel):
 
     marketplace_code: str
     skus: list[str]
+    profile_id: int | None = None
 
 
 class ManualPriceUpdate(BaseModel):
@@ -77,3 +78,81 @@ class DashboardPayload(BaseModel):
     health: SystemHealth
     alerts: list[AlertPayload]
     settings: RepricerSettings
+
+
+class AggressivenessSettings(BaseModel):
+    """Controls around undercutting and competitiveness."""
+
+    undercut_percent: float = Field(0.5, ge=0, le=100)
+
+
+class MarginPolicy(BaseModel):
+    """Margin guardrails applied per profile."""
+
+    min_margin_percent: float = Field(0.0, ge=0)
+
+
+class RepricingProfileBase(BaseModel):
+    """Shared fields for profile definitions."""
+
+    frequency_minutes: int = Field(60, ge=5, description="Run cadence in minutes")
+    aggressiveness: AggressivenessSettings = Field(default_factory=AggressivenessSettings)
+    price_change_limit_percent: float = Field(20.0, gt=0)
+    margin_policy: MarginPolicy = Field(default_factory=MarginPolicy)
+    step_up_percentage: float = Field(2.0, ge=0)
+    step_up_interval_hours: int = Field(6, ge=1)
+
+
+class RepricingProfileCreate(RepricingProfileBase):
+    """Create payload for repricing profiles."""
+
+    name: str
+
+
+class RepricingProfileUpdate(BaseModel):
+    """Mutable fields for repricing profiles."""
+
+    name: str | None = None
+    frequency_minutes: int | None = Field(None, ge=5)
+    aggressiveness: AggressivenessSettings | None = None
+    price_change_limit_percent: float | None = Field(None, gt=0)
+    margin_policy: MarginPolicy | None = None
+    step_up_percentage: float | None = Field(None, ge=0)
+    step_up_interval_hours: int | None = Field(None, ge=1)
+
+
+class RepricingProfileOut(RepricingProfileBase):
+    """Profile details returned from the API."""
+
+    id: int
+    name: str
+    sku_count: int = 0
+    created_at: datetime
+
+
+class RepricingProfileDetail(RepricingProfileOut):
+    """Detailed view including assigned SKUs."""
+
+    skus: list[ProfileSkuSummary] = Field(default_factory=list)
+
+
+class ProfileSkuSummary(BaseModel):
+    """Summary of SKUs assigned to a profile."""
+
+    id: int
+    sku: str
+    asin: str
+    marketplace_code: str
+
+
+class ProfileAssignment(BaseModel):
+    """Descriptor for assigning a SKU to a profile."""
+
+    sku: str
+    marketplace_code: str
+
+
+class ProfileAssignmentRequest(BaseModel):
+    """Payload to assign SKUs to a repricing profile."""
+
+    assignments: list[ProfileAssignment]

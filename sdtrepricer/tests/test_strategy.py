@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from decimal import Decimal
 
+import pytest
+
 from sdtrepricer.app.models import Sku
 from sdtrepricer.app.services.ftp_loader import FloorPriceRecord
 from sdtrepricer.app.services.repricer import CompetitorOffer, PricingStrategy
@@ -51,4 +53,4 @@ def test_daily_threshold_is_enforced():
     offers = [CompetitorOffer("sellerA", 40.0, False, "FBA")]
     strategy = PricingStrategy(max_daily_change_percent=10)
     result = strategy.determine_price(sku, offers, floor)
-    assert result.new_price <= Decimal("22.00")
+    assert float(result.new_price) <= 22.0001

@@ -51,12 +51,79 @@
           <button type="submit">Update Settings</button>
         </form>
       </section>
+      <section class="profiles">
+        <h2>Repricing Profiles</h2>
+        <div class="profile-management">
+          <div class="profile-list">
+            <label>
+              Select profile
+              <select id="profile-selector">
+                <option value="">-- None --</option>
+              </select>
+            </label>
+            <div id="profile-details" class="profile-details"></div>
+            <h3>Assigned SKUs</h3>
+            <ul id="profile-sku-list"></ul>
+          </div>
+          <form id="profile-create-form">
+            <h3>Create profile</h3>
+            <label>
+              Name
+              <input name="name" required />
+            </label>
+            <label>
+              Frequency (minutes)
+              <input type="number" name="frequency_minutes" min="5" required />
+            </label>
+            <label>
+              Undercut percent
+              <input type="number" step="0.1" name="undercut_percent" min="0" max="100" required />
+            </label>
+            <label>
+              Price change limit (%)
+              <input type="number" step="0.1" name="price_change_limit_percent" min="0.1" required />
+            </label>
+            <label>
+              Minimum margin (%)
+              <input type="number" step="0.1" name="min_margin_percent" min="0" required />
+            </label>
+            <label>
+              Step-up percentage
+              <input type="number" step="0.1" name="step_up_percentage" min="0" required />
+            </label>
+            <label>
+              Step-up interval (hours)
+              <input type="number" name="step_up_interval_hours" min="1" required />
+            </label>
+            <button type="submit">Create Profile</button>
+          </form>
+        </div>
+        <form id="profile-assign-form">
+          <h3>Assign SKUs to selected profile</h3>
+          <label>
+            Marketplace code
+            <input name="marketplace_code" maxlength="2" required />
+          </label>
+          <label>
+            SKU list (comma separated)
+            <textarea name="skus" rows="3" required></textarea>
+          </label>
+          <button type="submit">Assign SKUs</button>
+        </form>
+        <div id="profile-status"></div>
+      </section>
       <section class="actions">
         <h2>Manual Controls</h2>
         <form id="manual-reprice-form">
           <label>
             Marketplace code
             <input name="marketplace_code" maxlength="2" required />
+          </label>
+          <label>
+            Profile (optional)
+            <select name="profile_id" id="manual-profile-select">
+              <option value="">All profiles</option>
+            </select>
           </label>
           <button type="submit">Trigger Repricing</button>
         </form>

@@ -14,6 +14,7 @@ from .api import api_router
 from .core.config import settings
 from .core.database import get_session, init_db
 from .core.logging import configure_logging
+from .migrations import run_migrations
 from .models import Marketplace
 from .services.scheduler import RepricingScheduler
 
@@ -50,6 +51,7 @@ async def ensure_marketplaces() -> None:
 @app.on_event("startup")
 async def on_startup() -> None:
     await init_db()
+    await run_migrations()
     await ensure_marketplaces()
     scheduler = RepricingScheduler()
     app.state.scheduler = scheduler

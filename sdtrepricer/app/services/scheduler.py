@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
@@ -12,7 +12,7 @@ from sqlalchemy import select
 from ..core.config import settings
 from ..core.database import get_session
 from ..core.logging import logger
-from ..models import Marketplace
+from ..models import Marketplace, RepricingProfile, Sku
 from .ftp_loader import FTPFeedLoader
 from .repricer import Repricer
 from .sp_api import create_sp_api_client
@@ -40,8 +40,19 @@ class RepricingScheduler:
             await self._task
             logger.info("Scheduler stopped")
 
-    async def trigger_marketplace(self, marketplace_code: str, reason: str = "manual") -> None:
-        await self.queue.put(("repricer", {"marketplace_code": marketplace_code, "reason": reason}))
+    def _key(self, marketplace_code: str, profile_id: int | None) -> str:
+        suffix = str(profile_id) if profile_id is not None else "all"
+        return f"{marketplace_code}:{suffix}"
+
+    async def trigger_marketplace(
+        self, marketplace_code: str, reason: str = "manual", profile_id: int | None = None
+    ) -> None:
+        await self.queue.put(
+            (
+                "repricer",
+                {"marketplace_code": marketplace_code, "reason": reason, "profile_id": profile_id},
+            )
+        )
 
     async def handle_notification(self, payload: dict[str, Any]) -> None:
         marketplace_code = payload.get("marketplace_code")
@@ -63,24 +74,66 @@ class RepricingScheduler:
 
     async def _handle_reprice_request(self, data: dict[str, Any]) -> None:
         marketplace_code = data["marketplace_code"]
-        logger.info("Trigger repricing for %s due to %s", marketplace_code, data.get("reason"))
+        profile_id = data.get("profile_id")
+        logger.info(
+            "Trigger repricing for %s (profile=%s) due to %s",
+            marketplace_code,
+            profile_id,
+            data.get("reason"),
+        )
         async with get_session() as session:
             sp_api_client = await create_sp_api_client()
             try:
                 ftp_loader = FTPFeedLoader()
                 repricer = Repricer(session, sp_api_client, ftp_loader)
-                result = await repricer.run_marketplace(marketplace_code)
-                self.stats[marketplace_code] = result
-                self.last_runs[marketplace_code] = datetime.utcnow()
+                result = await repricer.run_marketplace(marketplace_code, profile_id=profile_id)
+                key = self._key(marketplace_code, profile_id)
+                self.stats[key] = result
+                now = datetime.utcnow()
+                processed_profiles = set(result.get("profiles_processed", []))
+                if profile_id is not None:
+                    processed_profiles.add(profile_id)
+                for processed in processed_profiles:
+                    self.last_runs[self._key(marketplace_code, processed)] = now
+                self.last_runs[key] = now
             finally:
                 await sp_api_client.close()
 
     async def _run_scheduled_cycle(self) -> None:
-        # schedule all marketplaces sequentially to ensure coverage
         async with get_session() as session:
             marketplaces = (await session.scalars(select(Marketplace))).all()
+            profile_rows = (
+                await session.execute(
+                    select(
+                        Marketplace.code,
+                        RepricingProfile.id,
+                        RepricingProfile.frequency_minutes,
+                    )
+                    .join(Sku, Sku.marketplace_id == Marketplace.id)
+                    .join(RepricingProfile, Sku.profile_id == RepricingProfile.id)
+                    .distinct()
+                )
+            ).all()
+        profiles_by_marketplace: dict[str, list[tuple[int, int]]] = defaultdict(list)
+        for code, profile_id, frequency in profile_rows:
+            profiles_by_marketplace[code].append((profile_id, frequency))
         for marketplace in marketplaces:
-            last_run = self.last_runs.get(marketplace.code)
-            if last_run and (datetime.utcnow() - last_run).total_seconds() < settings.scheduler_tick_seconds:
+            profiles = profiles_by_marketplace.get(marketplace.code)
+            if not profiles:
+                key = self._key(marketplace.code, None)
+                last_run = self.last_runs.get(key)
+                if last_run and (
+                    datetime.utcnow() - last_run
+                ).total_seconds() < settings.scheduler_tick_seconds:
+                    continue
+                await self.trigger_marketplace(marketplace.code, reason="scheduled")
                 continue
-            await self.trigger_marketplace(marketplace.code, reason="scheduled")
+            for profile_id, frequency in profiles:
+                key = self._key(marketplace.code, profile_id)
+                last_run = self.last_runs.get(key)
+                interval = timedelta(minutes=frequency)
+                if last_run and datetime.utcnow() - last_run < interval:
+                    continue
+                await self.trigger_marketplace(
+                    marketplace.code, reason="scheduled", profile_id=profile_id
+                )

@@ -29,6 +29,24 @@ class Marketplace(Base):
     )
 
 
+class RepricingProfile(Base):
+    """Reusable repricing strategy configuration."""
+
+    __tablename__ = "repricing_profiles"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    frequency_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
+    aggressiveness: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    price_change_limit_percent: Mapped[Decimal] = mapped_column(Numeric(5, 2), default=Decimal("20.00"))
+    margin_policy: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    step_up_percentage: Mapped[Decimal] = mapped_column(Numeric(5, 2), default=Decimal("2.00"))
+    step_up_interval_hours: Mapped[int] = mapped_column(Integer, default=6)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    skus: Mapped[list["Sku"]] = relationship("Sku", back_populates="profile")
+
+
 class Sku(Base):
     """SKU level configuration and metrics."""
 
@@ -39,6 +57,9 @@ class Sku(Base):
     sku: Mapped[str] = mapped_column(String(64), nullable=False)
     asin: Mapped[str] = mapped_column(String(16), nullable=False)
     marketplace_id: Mapped[int] = mapped_column(ForeignKey("marketplaces.id", ondelete="CASCADE"))
+    profile_id: Mapped[int | None] = mapped_column(
+        ForeignKey("repricing_profiles.id", ondelete="SET NULL"), nullable=True
+    )
     min_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     min_business_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     last_min_price_sync: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -49,6 +70,7 @@ class Sku(Base):
     last_buy_box_check: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     marketplace: Mapped["Marketplace"] = relationship("Marketplace", back_populates="skus")
+    profile: Mapped[RepricingProfile | None] = relationship("RepricingProfile", back_populates="skus")
     price_events: Mapped[list["PriceEvent"]] = relationship(
         "PriceEvent", back_populates="sku", cascade="all, delete-orphan"
     )
@@ -106,7 +128,9 @@ class Alert(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
     message: Mapped[str] = mapped_column(Text, nullable=False)
     severity: Mapped[str] = mapped_column(String(16), default=AlertSeverity.INFO.value)
-    metadata: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+    metadata_payload: Mapped[dict[str, object] | None] = mapped_column(
+        "metadata", JSON, nullable=True
+    )
     acknowledged: Mapped[bool] = mapped_column(Boolean, default=False)
 
 

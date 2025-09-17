@@ -20,7 +20,7 @@ async def create_alert(
     alert = Alert(
         message=message,
         severity=severity.value,
-        metadata=metadata,
+        metadata_payload=metadata,
         created_at=datetime.utcnow(),
     )
     session.add(alert)

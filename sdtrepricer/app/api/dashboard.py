@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..core.config import settings
 from ..dependencies import get_db
 from ..models import Alert, Marketplace, Sku, SystemSetting
 from ..schemas import AlertPayload, DashboardPayload, MarketplaceMetrics, RepricerSettings, SystemHealth
@@ -59,7 +60,7 @@ async def get_dashboard(
             severity=alert.severity,
             created_at=alert.created_at,
             acknowledged=alert.acknowledged,
-            metadata=alert.metadata,
+            metadata=alert.metadata_payload,
         )
         for alert in alerts_rows
     ]
@@ -83,7 +84,7 @@ async def get_dashboard(
     if scheduler:
         health_details = {
             "last_runs": {k: v.isoformat() for k, v in scheduler.last_runs.items()},
-            "stats": scheduler.stats,
+            "stats": {k: v for k, v in scheduler.stats.items()},
         }
     health = SystemHealth(status="ok", timestamp=datetime.utcnow(), details=health_details)
     return DashboardPayload(metrics=metrics, health=health, alerts=alerts, settings=repricer_settings)
