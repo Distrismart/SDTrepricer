@@ -32,6 +32,7 @@ class Marketplace(Base):
 class RepricingProfile(Base):
     """Reusable repricing strategy configuration."""
 
+
     __tablename__ = "repricing_profiles"
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -45,6 +46,7 @@ class RepricingProfile(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
     skus: Mapped[list["Sku"]] = relationship("Sku", back_populates="profile")
+
 
 
 class Sku(Base):
@@ -68,9 +70,15 @@ class Sku(Base):
     last_updated_business_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
     last_price_update: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_buy_box_check: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    repricing_profile_id: Mapped[int | None] = mapped_column(
+        ForeignKey("repricing_profiles.id", ondelete="SET NULL"),
+        nullable=True,
+    )
 
     marketplace: Mapped["Marketplace"] = relationship("Marketplace", back_populates="skus")
+
     profile: Mapped[RepricingProfile | None] = relationship("RepricingProfile", back_populates="skus")
+
     price_events: Mapped[list["PriceEvent"]] = relationship(
         "PriceEvent", back_populates="sku", cascade="all, delete-orphan"
     )
@@ -131,7 +139,36 @@ class Alert(Base):
     metadata_payload: Mapped[dict[str, object] | None] = mapped_column(
         "metadata", JSON, nullable=True
     )
+
     acknowledged: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class TestFloorPrice(Base):
+    """Uploaded floor price data used while running in test mode."""
+
+    __tablename__ = "test_floor_prices"
+    __table_args__ = (UniqueConstraint("marketplace_code", "sku", name="uq_test_floor_marketplace_sku"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    marketplace_code: Mapped[str] = mapped_column(String(4), nullable=False)
+    sku: Mapped[str] = mapped_column(String(64), nullable=False)
+    asin: Mapped[str] = mapped_column(String(16), nullable=False)
+    min_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    min_business_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+
+
+class TestCompetitorOffer(Base):
+    """Uploaded competitor offers used while running in test mode."""
+
+    __tablename__ = "test_competitor_offers"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    marketplace_code: Mapped[str] = mapped_column(String(4), nullable=False)
+    asin: Mapped[str] = mapped_column(String(16), nullable=False)
+    seller_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    is_buy_box: Mapped[bool] = mapped_column(Boolean, default=False)
+    fulfillment_type: Mapped[str] = mapped_column(String(16), nullable=False, default="UNKNOWN")
 
 
 class SystemSetting(Base):

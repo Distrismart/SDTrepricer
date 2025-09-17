@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 import pytest
 from sqlalchemy import select
 
 from sdtrepricer.app.models import Marketplace, PriceEvent, RepricingProfile, Sku
+
 from sdtrepricer.app.services.ftp_loader import FloorPriceRecord
 from sdtrepricer.app.services.repricer import PricingStrategy, Repricer
+from sdtrepricer.app.services.test_data import ingest_competitor_data, ingest_floor_data
 
 
 class StubFTP:
@@ -59,10 +62,32 @@ class StubSPAPI:
         return None
 
 
+class RejectingFTP:
+    def validate_freshness(self, marketplace_code: str) -> bool:  # pragma: no cover - safety
+        raise AssertionError("FTP loader should not be used in test mode")
+
+    def load(self, marketplace_code: str):  # pragma: no cover - safety
+        raise AssertionError("FTP loader should not be used in test mode")
+
+
+class RejectingSPAPI:
+    async def get_competitive_pricing(self, marketplace_id: str, asins: list[str]):  # pragma: no cover
+        raise AssertionError("Competitive pricing should not be fetched in test mode")
+
+    async def submit_price_update(
+        self, marketplace_id: str, sku: str, price: float, business_price: float | None
+    ) -> None:  # pragma: no cover - safety
+        raise AssertionError("Price updates should not be submitted in test mode")
+
+    async def close(self):  # pragma: no cover - compatibility
+        return None
+
+
 @pytest.mark.anyio
 async def test_repricer_updates_prices(db_session):
     marketplace = Marketplace(code="DE", name="Germany", amazon_id="A1")
     profile = RepricingProfile(
+
         name="Default",
         frequency_minutes=60,
         aggressiveness={"undercut_percent": 0.5},
@@ -70,6 +95,7 @@ async def test_repricer_updates_prices(db_session):
         margin_policy={"min_margin_percent": 0.0},
         step_up_percentage=Decimal("2.0"),
         step_up_interval_hours=6,
+
     )
     sku = Sku(
         sku="SKU1",
@@ -79,6 +105,9 @@ async def test_repricer_updates_prices(db_session):
         min_price=Decimal("10.00"),
         min_business_price=Decimal("12.00"),
         last_updated_price=Decimal("15.00"),
+        hold_buy_box=True,
+        last_price_update=datetime.utcnow() - timedelta(hours=2),
+        repricing_profile=profile,
     )
     db_session.add_all([marketplace, profile, sku])
     await db_session.commit()
@@ -91,7 +120,7 @@ async def test_repricer_updates_prices(db_session):
     assert result["updated"] == 1
     assert ftp.checked
     await db_session.refresh(sku)
-    assert float(sku.last_updated_price) > 15.0
+    assert float(sku.last_updated_price) == 17.0
 
     events = (await db_session.scalars(select(PriceEvent))).all()
     assert len(events) == 1
@@ -100,6 +129,7 @@ async def test_repricer_updates_prices(db_session):
 
 
 @pytest.mark.anyio
+
 async def test_profile_aggressiveness_applied(db_session):
     marketplace = Marketplace(code="DE", name="Germany", amazon_id="A1")
     profile = RepricingProfile(

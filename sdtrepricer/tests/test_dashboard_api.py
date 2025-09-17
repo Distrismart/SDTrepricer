@@ -9,7 +9,7 @@ from httpx import ASGITransport, AsyncClient
 
 from sdtrepricer.app.api import api_router
 from sdtrepricer.app.dependencies import get_db
-from sdtrepricer.app.models import Alert, Marketplace, Sku, SystemSetting
+from sdtrepricer.app.models import Alert, Marketplace, PriceEvent, Sku, SystemSetting
 
 
 @pytest.mark.anyio
@@ -29,7 +29,22 @@ async def test_dashboard_endpoint(db_session):
             sku,
             Alert(message="Test alert", severity="WARNING"),
             SystemSetting(key="max_price_change_percent", value="15"),
+            SystemSetting(key="test_mode", value="true"),
+            SystemSetting(key="step_up_type", value="absolute"),
+            SystemSetting(key="step_up_value", value="1.5"),
+            SystemSetting(key="step_up_interval_hours", value="4"),
+
         ]
+    )
+    db_session.add(
+        PriceEvent(
+            sku=sku,
+            created_at=datetime.utcnow(),
+            old_price=Decimal("10"),
+            new_price=Decimal("11"),
+            reason="repricer-test",
+            context={"mode": "test"},
+        )
     )
     await db_session.commit()
 
@@ -54,3 +69,8 @@ async def test_dashboard_endpoint(db_session):
     payload = response.json()
     assert payload["metrics"][0]["buy_box_skus"] == 1
     assert payload["alerts"][0]["message"] == "Test alert"
+    assert payload["settings"]["step_up_type"] == "absolute"
+    assert payload["settings"]["step_up_value"] == 1.5
+    assert payload["settings"]["step_up_interval_hours"] == 4.0
+    assert payload["settings"]["test_mode"] is True
+    assert payload["simulated_events"][0]["sku"] == "SKU1"

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -42,8 +42,24 @@ class RepricerSettings(BaseModel):
     """Repricer configurable options."""
 
     max_price_change_percent: float
-    step_up_percentage: float
-    step_up_interval_hours: int
+
+    step_up_type: Literal["percentage", "absolute"]
+    step_up_value: float
+    step_up_interval_hours: float
+    test_mode: bool
+
+
+class SimulatedPriceOutcome(BaseModel):
+    """Preview of a simulated price change while in test mode."""
+
+    sku: str
+    marketplace_code: str
+    created_at: datetime
+    old_price: Decimal | None
+    new_price: Decimal | None
+    old_business_price: Decimal | None = None
+    new_business_price: Decimal | None = None
+    context: dict[str, Any] | None = None
 
 
 class ManualRepriceRequest(BaseModel):
@@ -78,7 +94,6 @@ class DashboardPayload(BaseModel):
     health: SystemHealth
     alerts: list[AlertPayload]
     settings: RepricerSettings
-
 
 class AggressivenessSettings(BaseModel):
     """Controls around undercutting and competitiveness."""
@@ -156,3 +171,4 @@ class ProfileAssignmentRequest(BaseModel):
     """Payload to assign SKUs to a repricing profile."""
 
     assignments: list[ProfileAssignment]
+

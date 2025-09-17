@@ -14,6 +14,9 @@ if str(ROOT_DIR) not in sys.path:
 
 from sdtrepricer.app.models import Base
 
+collect_ignore = ["../app/services/test_data.py", "../app/api/test_data.py"]
+collect_ignore_glob = ["../app/services/test_*.py", "../app/api/test_*.py"]
+
 
 class AsyncSessionWrapper:
     """Minimal async wrapper around a synchronous SQLAlchemy session."""

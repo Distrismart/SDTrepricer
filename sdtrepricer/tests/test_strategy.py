@@ -35,16 +35,58 @@ def test_competitor_undercut():
     assert result.new_price >= Decimal("10.00")
 
 
-def test_buy_box_step_up():
+def test_buy_box_percentage_step_up():
     sku = build_sku(
         hold_buy_box=True,
         last_updated_price=Decimal("20.00"),
         last_price_update=datetime.utcnow() - timedelta(hours=8),
     )
     floor = FloorPriceRecord("SKU123", "ASIN123", 10.0, 12.0)
-    strategy = PricingStrategy(step_up_percentage=5, step_up_interval_hours=6)
+    strategy = PricingStrategy(
+        step_up_type="percentage",
+        step_up_value=5,
+        step_up_interval_hours=6,
+        max_daily_change_percent=100,
+    )
     result = strategy.determine_price(sku, [], floor)
     assert result.new_price >= Decimal("21.00")
+    assert result.context["step_up"]["type"] == "percentage"
+
+
+def test_buy_box_absolute_step_up():
+    sku = build_sku(
+        hold_buy_box=True,
+        last_updated_price=Decimal("20.00"),
+        last_price_update=datetime.utcnow() - timedelta(hours=8),
+    )
+    floor = FloorPriceRecord("SKU123", "ASIN123", 10.0, 12.0)
+    strategy = PricingStrategy(
+        step_up_type="absolute",
+        step_up_value=Decimal("2.50"),
+        step_up_interval_hours=4,
+        max_daily_change_percent=100,
+    )
+    result = strategy.determine_price(sku, [], floor)
+    assert result.new_price == Decimal("22.50")
+    assert result.context["step_up"]["type"] == "absolute"
+
+
+def test_step_up_interval_enforced():
+    sku = build_sku(
+        hold_buy_box=True,
+        last_updated_price=Decimal("20.00"),
+        last_price_update=datetime.utcnow() - timedelta(hours=1),
+    )
+    floor = FloorPriceRecord("SKU123", "ASIN123", 10.0, 12.0)
+    strategy = PricingStrategy(
+        step_up_type="absolute",
+        step_up_value=Decimal("5.00"),
+        step_up_interval_hours=6,
+        max_daily_change_percent=100,
+    )
+    result = strategy.determine_price(sku, [], floor)
+    assert result.new_price == Decimal("20.00")
+    assert result.context["step_up_candidate"] is None
 
 
 def test_daily_threshold_is_enforced():

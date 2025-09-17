@@ -41,7 +41,11 @@ class Settings(BaseSettings):
     repricing_batch_size: int = 40
     repricing_concurrency: int = 8
     max_price_change_percent: float = 20.0
+    step_up_type: Literal["percentage", "absolute"] = "percentage"
+    step_up_value: float = 2.0
+    step_up_interval_hours: float = 6.0
     sp_api_endpoint: str = "https://sellingpartnerapi-eu.amazon.com"
+    test_mode: bool = False
 
 
 @lru_cache

@@ -41,12 +41,27 @@
             <input type="number" step="0.1" name="max_price_change_percent" required />
           </label>
           <label>
-            Step-up percentage when holding Buy Box (%)
-            <input type="number" step="0.1" name="step_up_percentage" required />
+            Step-up type
+            <select name="step_up_type" required>
+              <option value="percentage">Percentage</option>
+              <option value="absolute">Absolute</option>
+            </select>
+          </label>
+          <label>
+            Step-up value
+            <input type="number" step="0.01" name="step_up_value" required />
           </label>
           <label>
             Step-up interval (hours)
-            <input type="number" name="step_up_interval_hours" required />
+            <input type="number" step="0.1" name="step_up_interval_hours" required />
+          </label>
+          <label class="checkbox">
+            <input type="checkbox" name="test_mode" />
+            Enable test mode (simulate repricing updates)
+          </label>
+          <label class="checkbox">
+            <input type="checkbox" name="test_mode" />
+            Enable test mode (simulate repricing updates)
           </label>
           <button type="submit">Update Settings</button>
         </form>
@@ -140,6 +155,34 @@
           <button type="submit">Upload Feed</button>
         </form>
         <div id="action-status"></div>
+      </section>
+      <section class="test-mode">
+        <h2>Test Mode Data</h2>
+        <form id="test-floor-form" enctype="multipart/form-data">
+          <label>Marketplace code<input name="marketplace_code" required /></label>
+          <label>Floor price file<input type="file" name="file" accept=".csv" required /></label>
+          <button type="submit">Upload Floor Prices</button>
+        </form>
+        <form id="test-competitor-form" enctype="multipart/form-data">
+          <label>Marketplace code<input name="marketplace_code" required /></label>
+          <label>Competitor offers file<input type="file" name="file" accept=".csv" required /></label>
+          <button type="submit">Upload Competitors</button>
+        </form>
+        <div id="test-mode-status"></div>
+        <h3>Simulated Price Outcomes</h3>
+        <table id="simulation-table">
+          <thead>
+            <tr>
+              <th>Timestamp</th>
+              <th>Marketplace</th>
+              <th>SKU</th>
+              <th>Old Price</th>
+              <th>New Price</th>
+              <th>Details</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
       </section>
     </main>
     <script src="/static/js/dashboard.js"></script>

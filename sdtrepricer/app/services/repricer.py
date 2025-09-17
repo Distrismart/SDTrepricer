@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
+from enum import Enum
 from typing import Any
 
 from sqlalchemy import select
@@ -14,10 +15,13 @@ from sqlalchemy.orm import selectinload
 
 from ..core.config import settings
 from ..core.logging import logger
+
 from ..models import AlertSeverity, Marketplace, PriceEvent, RepricingProfile, RepricingRun, Sku
+
 from .alerts import create_alert
 from .ftp_loader import FTPFeedLoader, FloorPriceRecord
 from .sp_api import SPAPIClient
+from .test_data import load_competitor_offers, load_floor_prices
 
 
 @dataclass
@@ -38,26 +42,47 @@ class PriceComputation:
     context: dict[str, Any]
 
 
+class StepUpType(str, Enum):
+    """Supported step-up configurations."""
+
+    PERCENTAGE = "percentage"
+    ABSOLUTE = "absolute"
+
+
+@dataclass
+class StepUpConfig:
+    """Resolved step-up behaviour for a SKU evaluation."""
+
+    type: StepUpType
+    value: Decimal
+    interval: timedelta
+
+
 class PricingStrategy:
     """Encapsulate repricing rules."""
 
     def __init__(
         self,
-        step_up_percentage: float = 2.0,
-        step_up_interval_hours: int = 6,
+        step_up_type: StepUpType | str | None = None,
+        step_up_value: float | Decimal | None = None,
+        step_up_interval_hours: float | None = None,
         max_daily_change_percent: float | None = None,
         undercut_percent: float = 0.5,
         min_margin_percent: float = 0.0,
     ) -> None:
+
         self.step_up_percentage = step_up_percentage
         self.step_up_interval = timedelta(hours=step_up_interval_hours)
+
         self.max_daily_change_percent = (
             max_daily_change_percent
             if max_daily_change_percent is not None
             else settings.max_price_change_percent
         )
+
         self.undercut_percent = undercut_percent
         self.min_margin_percent = min_margin_percent
+
 
     def _enforce_minimum(self, new_price: Decimal, sku: Sku) -> Decimal:
         return max(new_price, sku.min_price)
@@ -65,10 +90,11 @@ class PricingStrategy:
     def _enforce_daily_threshold(self, new_price: Decimal, sku: Sku) -> Decimal:
         if sku.last_updated_price is None:
             return new_price
-        threshold = Decimal(1 + self.max_daily_change_percent / 100)
+        threshold = Decimal("1") + (Decimal(str(self.max_daily_change_percent)) / Decimal("100"))
         max_allowed = sku.last_updated_price * threshold
         min_allowed = sku.last_updated_price / threshold
         return min(max(new_price, min_allowed), max_allowed)
+
 
     def _apply_margin_policy(self, new_price: Decimal, floor: FloorPriceRecord) -> Decimal:
         if self.min_margin_percent <= 0:
@@ -79,30 +105,49 @@ class PricingStrategy:
         return max(new_price, required)
 
     def _step_up(self, sku: Sku) -> Decimal | None:
+
         if not sku.last_updated_price:
             return None
-        if not sku.last_price_update or datetime.utcnow() - sku.last_price_update < self.step_up_interval:
+        if not sku.last_price_update:
             return None
-        target = sku.last_updated_price * Decimal(1 + self.step_up_percentage / 100)
-        return target
+        if datetime.utcnow() - sku.last_price_update < config.interval:
+            return None
+        if config.type is StepUpType.PERCENTAGE:
+            multiplier = Decimal("1") + (config.value / Decimal("100"))
+            return sku.last_updated_price * multiplier
+        return sku.last_updated_price + config.value
 
     def determine_price(
         self,
         sku: Sku,
         offers: list[CompetitorOffer],
         floor: FloorPriceRecord,
+        *,
+        step_up_type: StepUpType | str | None = None,
+        step_up_value: float | Decimal | None = None,
+        step_up_interval_hours: float | None = None,
     ) -> PriceComputation:
         context: dict[str, Any] = {
             "competitor_count": len(offers),
             "hold_buy_box": sku.hold_buy_box,
             "undercut_percent": self.undercut_percent,
         }
+        step_up_config = self._build_step_up_config(
+            step_up_type, step_up_value, step_up_interval_hours
+        )
+        context["step_up"] = {
+            "type": step_up_config.type.value,
+            "value": float(step_up_config.value),
+            "interval_hours": step_up_config.interval.total_seconds() / 3600,
+        }
         # Default to maintain last price if no offers
         candidate_price = sku.last_updated_price or Decimal(str(floor.min_price))
         if sku.hold_buy_box:
-            step_up_price = self._step_up(sku)
-            context["step_up_candidate"] = float(step_up_price) if step_up_price else None
-            if step_up_price:
+            step_up_price = self._step_up(sku, step_up_config)
+            context["step_up_candidate"] = (
+                float(step_up_price) if step_up_price is not None else None
+            )
+            if step_up_price is not None:
                 candidate_price = max(candidate_price, step_up_price)
         else:
             # Find best competitor price
@@ -140,11 +185,24 @@ class Repricer:
         sp_api: SPAPIClient,
         ftp_loader: FTPFeedLoader,
         strategy: PricingStrategy | None = None,
+        test_mode: bool | None = None,
     ) -> None:
         self.session = session
         self.sp_api = sp_api
         self.ftp_loader = ftp_loader
         self.strategy = strategy or PricingStrategy()
+        self._test_mode_override = test_mode
+
+    async def _is_test_mode(self) -> bool:
+        if self._test_mode_override is not None:
+            return self._test_mode_override
+        setting = await self.session.scalar(
+            select(SystemSetting).where(SystemSetting.key == "test_mode")
+        )
+        if setting:
+            return setting.value.lower() in {"1", "true", "yes", "on"}
+        return settings.test_mode
+
 
     async def _fetch_skus(
         self, marketplace: Marketplace, profile_id: int | None = None
@@ -157,6 +215,7 @@ class Repricer:
         if profile_id is not None:
             stmt = stmt.where(Sku.profile_id == profile_id)
         result = await self.session.execute(stmt)
+
         return list(result.scalars().all())
 
     def _strategy_for_profile(self, profile: RepricingProfile | None) -> PricingStrategy:
@@ -193,13 +252,15 @@ class Repricer:
             offers[asin] = offer_list
         return offers
 
+
     async def run_marketplace(
         self, marketplace_code: str, profile_id: int | None = None
     ) -> dict[str, Any]:
+
         run = RepricingRun(
             started_at=datetime.utcnow(),
             marketplace_id=0,
-            status="running",
+            status="test-running" if test_mode else "running",
         )
         result = {
             "processed": 0,
@@ -220,6 +281,7 @@ class Repricer:
             run.status = "empty"
             await self.session.commit()
             return result
+
         if not self.ftp_loader.validate_freshness(marketplace_code):
             await create_alert(
                 self.session,
@@ -276,8 +338,9 @@ class Repricer:
                         result["updated"] += 1
                     if profile_key is not None:
                         processed_profiles.add(profile_key)
+
         run.completed_at = datetime.utcnow()
-        run.status = "completed"
+        run.status = "test-completed" if test_mode else "completed"
         run.processed = result["processed"]
         run.updated = result["updated"]
         run.errors = result["errors"]
@@ -287,14 +350,37 @@ class Repricer:
         logger.info("Completed repricing %s: %s", marketplace_code, result)
         return result
 
-    async def _apply_price(self, computation: PriceComputation, marketplace: Marketplace) -> None:
+    async def _apply_price(
+        self,
+        computation: PriceComputation,
+        marketplace: Marketplace,
+        test_mode: bool,
+        offers: list[CompetitorOffer],
+    ) -> None:
         sku = computation.sku
         if computation.new_price is None:
             return
-        if sku.last_updated_price == computation.new_price:
+        if not test_mode and sku.last_updated_price == computation.new_price:
             return
         previous_price = sku.last_updated_price
         previous_business_price = sku.last_updated_business_price
+        if test_mode:
+            event = PriceEvent(
+                sku_id=sku.id,
+                created_at=datetime.utcnow(),
+                old_price=previous_price,
+                new_price=computation.new_price,
+                old_business_price=previous_business_price,
+                new_business_price=computation.new_business_price,
+                reason="repricer-test",
+                context={
+                    "mode": "test",
+                    "offers": [asdict(offer) for offer in offers],
+                    "computation": computation.context,
+                },
+            )
+            self.session.add(event)
+            return
         payload = await self.sp_api.submit_price_update(
             marketplace.amazon_id,
             sku.sku,
