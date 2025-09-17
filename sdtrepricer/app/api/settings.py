@@ -46,6 +46,7 @@ async def read_settings(session: AsyncSession = Depends(get_db)) -> RepricerSett
             step_up_interval_hours=float(
                 mapping.get("step_up_interval_hours", settings.step_up_interval_hours)
             ),
+
             test_mode=(
                 settings.test_mode
                 if test_mode_value is None

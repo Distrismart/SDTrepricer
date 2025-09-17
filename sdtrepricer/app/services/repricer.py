@@ -305,6 +305,7 @@ class Repricer:
                 floor_map = {
                     record.sku: record for record in self.ftp_loader.load(marketplace_code)
                 }
+
             except FileNotFoundError:
                 await create_alert(
                     self.session,
@@ -323,6 +324,7 @@ class Repricer:
                         price=offer.price,
                         is_buy_box=offer.is_buy_box,
                         fulfillment_type=offer.fulfillment_type,
+
                     )
                     for offer in offers
                 ]
@@ -349,6 +351,7 @@ class Repricer:
                     floor,
                     **overrides,
                 )
+
                 await self._apply_price(computation, marketplace, True, offers)
                 if computation.new_price is not None:
                     result["updated"] += 1
@@ -379,6 +382,7 @@ class Repricer:
                                 {"marketplace": marketplace_code},
                             )
                             continue
+
                         overrides = self._step_up_overrides(sku)
                         computation = self.strategy.determine_price(
                             sku,
@@ -392,6 +396,7 @@ class Repricer:
                             False,
                             offers.get(sku.asin, []),
                         )
+
                         if computation.new_price is not None:
                             result["updated"] += 1
         run.completed_at = datetime.utcnow()

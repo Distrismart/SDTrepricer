@@ -6,6 +6,7 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import select
 
+
 from sdtrepricer.app.models import (
     Marketplace,
     PriceEvent,

@@ -33,6 +33,7 @@ async def test_dashboard_endpoint(db_session):
             SystemSetting(key="step_up_type", value="absolute"),
             SystemSetting(key="step_up_value", value="1.5"),
             SystemSetting(key="step_up_interval_hours", value="4"),
+
         ]
     )
     db_session.add(

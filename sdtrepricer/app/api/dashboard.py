@@ -119,6 +119,7 @@ async def get_dashboard(
             .order_by(PriceEvent.created_at.desc())
             .limit(20)
     )
+
     simulated_events = [
         SimulatedPriceOutcome(
             sku=sku.sku,

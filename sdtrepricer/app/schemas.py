@@ -42,6 +42,7 @@ class RepricerSettings(BaseModel):
     """Repricer configurable options."""
 
     max_price_change_percent: float
+
     step_up_type: Literal["percentage", "absolute"]
     step_up_value: float
     step_up_interval_hours: float

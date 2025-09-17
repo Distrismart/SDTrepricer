@@ -123,9 +123,11 @@ async function handleSettings(event) {
   const form = event.target;
   const payload = {
     max_price_change_percent: parseFloat(form.max_price_change_percent.value),
+
     step_up_type: form.step_up_type.value,
     step_up_value: parseFloat(form.step_up_value.value),
     step_up_interval_hours: parseFloat(form.step_up_interval_hours.value),
+
     test_mode: form.test_mode.checked,
   };
   try {
