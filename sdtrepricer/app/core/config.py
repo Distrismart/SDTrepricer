@@ -42,6 +42,7 @@ class Settings(BaseSettings):
     repricing_concurrency: int = 8
     max_price_change_percent: float = 20.0
     sp_api_endpoint: str = "https://sellingpartnerapi-eu.amazon.com"
+    test_mode: bool = False
 
 
 @lru_cache

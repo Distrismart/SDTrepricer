@@ -8,9 +8,17 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..core.config import settings
 from ..dependencies import get_db
-from ..models import Alert, Marketplace, Sku, SystemSetting
-from ..schemas import AlertPayload, DashboardPayload, MarketplaceMetrics, RepricerSettings, SystemHealth
+from ..models import Alert, Marketplace, PriceEvent, Sku, SystemSetting
+from ..schemas import (
+    AlertPayload,
+    DashboardPayload,
+    MarketplaceMetrics,
+    RepricerSettings,
+    SimulatedPriceOutcome,
+    SystemHealth,
+)
 
 router = APIRouter()
 
@@ -64,11 +72,18 @@ async def get_dashboard(
         for alert in alerts_rows
     ]
     settings_rows = (
-        await session.execute(select(SystemSetting).where(SystemSetting.key.in_({
-            "max_price_change_percent",
-            "step_up_percentage",
-            "step_up_interval_hours",
-        })))
+        await session.execute(
+            select(SystemSetting).where(
+                SystemSetting.key.in_(
+                    {
+                        "max_price_change_percent",
+                        "step_up_percentage",
+                        "step_up_interval_hours",
+                        "test_mode",
+                    }
+                )
+            )
+        )
     ).scalars().all()
     settings_map = {row.key: row.value for row in settings_rows}
     repricer_settings = RepricerSettings(
@@ -77,7 +92,33 @@ async def get_dashboard(
         ),
         step_up_percentage=float(settings_map.get("step_up_percentage", 2.0)),
         step_up_interval_hours=int(settings_map.get("step_up_interval_hours", 6)),
+        test_mode=(
+            settings.test_mode
+            if "test_mode" not in settings_map
+            else str(settings_map["test_mode"]).lower() in {"1", "true", "yes", "on"}
+        ),
     )
+    simulated_rows = await session.execute(
+        select(PriceEvent, Sku, Marketplace)
+            .join(Sku, PriceEvent.sku_id == Sku.id)
+            .join(Marketplace, Sku.marketplace_id == Marketplace.id)
+            .where(PriceEvent.reason == "repricer-test")
+            .order_by(PriceEvent.created_at.desc())
+            .limit(20)
+    )
+    simulated_events = [
+        SimulatedPriceOutcome(
+            sku=sku.sku,
+            marketplace_code=marketplace.code,
+            created_at=event.created_at,
+            old_price=event.old_price,
+            new_price=event.new_price,
+            old_business_price=event.old_business_price,
+            new_business_price=event.new_business_price,
+            context=event.context,
+        )
+        for event, sku, marketplace in simulated_rows.all()
+    ]
     scheduler = getattr(request.app.state, "scheduler", None)
     health_details = {}
     if scheduler:
@@ -86,4 +127,10 @@ async def get_dashboard(
             "stats": scheduler.stats,
         }
     health = SystemHealth(status="ok", timestamp=datetime.utcnow(), details=health_details)
-    return DashboardPayload(metrics=metrics, health=health, alerts=alerts, settings=repricer_settings)
+    return DashboardPayload(
+        metrics=metrics,
+        health=health,
+        alerts=alerts,
+        settings=repricer_settings,
+        simulated_events=simulated_events,
+    )
