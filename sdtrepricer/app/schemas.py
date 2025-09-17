@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -42,8 +42,9 @@ class RepricerSettings(BaseModel):
     """Repricer configurable options."""
 
     max_price_change_percent: float
-    step_up_percentage: float
-    step_up_interval_hours: int
+    step_up_type: Literal["percentage", "absolute"]
+    step_up_value: float
+    step_up_interval_hours: float
 
 
 class ManualRepriceRequest(BaseModel):

@@ -29,6 +29,20 @@ class Marketplace(Base):
     )
 
 
+class RepricingProfile(Base):
+    """Reusable configuration buckets for repricing behaviour."""
+
+    __tablename__ = "repricing_profiles"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    step_up_type: Mapped[str | None] = mapped_column(String(16))
+    step_up_value: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    step_up_interval_hours: Mapped[int | None] = mapped_column(Integer)
+
+    skus: Mapped[list["Sku"]] = relationship("Sku", back_populates="repricing_profile")
+
+
 class Sku(Base):
     """SKU level configuration and metrics."""
 
@@ -47,8 +61,15 @@ class Sku(Base):
     last_updated_business_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
     last_price_update: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_buy_box_check: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    repricing_profile_id: Mapped[int | None] = mapped_column(
+        ForeignKey("repricing_profiles.id", ondelete="SET NULL"),
+        nullable=True,
+    )
 
     marketplace: Mapped["Marketplace"] = relationship("Marketplace", back_populates="skus")
+    repricing_profile: Mapped[RepricingProfile | None] = relationship(
+        "RepricingProfile", back_populates="skus"
+    )
     price_events: Mapped[list["PriceEvent"]] = relationship(
         "PriceEvent", back_populates="sku", cascade="all, delete-orphan"
     )
@@ -106,7 +127,7 @@ class Alert(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
     message: Mapped[str] = mapped_column(Text, nullable=False)
     severity: Mapped[str] = mapped_column(String(16), default=AlertSeverity.INFO.value)
-    metadata: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+    metadata_payload: Mapped[dict[str, object] | None] = mapped_column("metadata", JSON, nullable=True)
     acknowledged: Mapped[bool] = mapped_column(Boolean, default=False)
 
 

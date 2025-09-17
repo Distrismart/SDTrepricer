@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 import pytest
 from sqlalchemy import select
 
-from sdtrepricer.app.models import Marketplace, PriceEvent, Sku
+from sdtrepricer.app.models import Marketplace, PriceEvent, RepricingProfile, Sku
 from sdtrepricer.app.services.ftp_loader import FloorPriceRecord
 from sdtrepricer.app.services.repricer import PricingStrategy, Repricer
 
@@ -61,6 +62,9 @@ class StubSPAPI:
 @pytest.mark.anyio
 async def test_repricer_updates_prices(db_session):
     marketplace = Marketplace(code="DE", name="Germany", amazon_id="A1")
+    profile = RepricingProfile(
+        name="buy-box", step_up_type="absolute", step_up_value=Decimal("2.00"), step_up_interval_hours=1
+    )
     sku = Sku(
         sku="SKU1",
         asin="ASIN1",
@@ -68,9 +72,11 @@ async def test_repricer_updates_prices(db_session):
         min_price=Decimal("10.00"),
         min_business_price=Decimal("12.00"),
         last_updated_price=Decimal("15.00"),
+        hold_buy_box=True,
+        last_price_update=datetime.utcnow() - timedelta(hours=2),
+        repricing_profile=profile,
     )
-    db_session.add(marketplace)
-    db_session.add(sku)
+    db_session.add_all([marketplace, profile, sku])
     await db_session.commit()
 
     ftp = StubFTP(FloorPriceRecord("SKU1", "ASIN1", 10.0, 12.0))
@@ -81,7 +87,7 @@ async def test_repricer_updates_prices(db_session):
     assert result["updated"] == 1
     assert ftp.checked
     await db_session.refresh(sku)
-    assert float(sku.last_updated_price) > 15.0
+    assert float(sku.last_updated_price) == 17.0
 
     events = (await db_session.scalars(select(PriceEvent))).all()
     assert len(events) == 1

@@ -6,10 +6,12 @@ import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
+from enum import Enum
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from ..core.config import settings
 from ..core.logging import logger
@@ -37,18 +39,72 @@ class PriceComputation:
     context: dict[str, Any]
 
 
+class StepUpType(str, Enum):
+    """Supported step-up configurations."""
+
+    PERCENTAGE = "percentage"
+    ABSOLUTE = "absolute"
+
+
+@dataclass
+class StepUpConfig:
+    """Resolved step-up behaviour for a SKU evaluation."""
+
+    type: StepUpType
+    value: Decimal
+    interval: timedelta
+
+
 class PricingStrategy:
     """Encapsulate repricing rules."""
 
     def __init__(
         self,
-        step_up_percentage: float = 2.0,
-        step_up_interval_hours: int = 6,
+        step_up_type: StepUpType | str | None = None,
+        step_up_value: float | Decimal | None = None,
+        step_up_interval_hours: float | None = None,
         max_daily_change_percent: float | None = None,
     ) -> None:
-        self.step_up_percentage = step_up_percentage
-        self.step_up_interval = timedelta(hours=step_up_interval_hours)
-        self.max_daily_change_percent = max_daily_change_percent or settings.max_price_change_percent
+        self.step_up_type = self._normalize_step_up_type(step_up_type or settings.step_up_type)
+        base_value = step_up_value if step_up_value is not None else settings.step_up_value
+        self.step_up_value = base_value if isinstance(base_value, Decimal) else Decimal(str(base_value))
+        interval_hours = float(
+            step_up_interval_hours
+            if step_up_interval_hours is not None
+            else settings.step_up_interval_hours
+        )
+        self.step_up_interval_hours = interval_hours
+        self.step_up_interval = timedelta(hours=interval_hours)
+        self.max_daily_change_percent = (
+            max_daily_change_percent
+            if max_daily_change_percent is not None
+            else settings.max_price_change_percent
+        )
+
+    def _normalize_step_up_type(self, value: StepUpType | str) -> StepUpType:
+        if isinstance(value, StepUpType):
+            return value
+        try:
+            return StepUpType(str(value).lower())
+        except ValueError as exc:  # pragma: no cover - defensive
+            raise ValueError(f"Unsupported step-up type: {value}") from exc
+
+    def _build_step_up_config(
+        self,
+        step_up_type: StepUpType | str | None,
+        step_up_value: float | Decimal | None,
+        step_up_interval_hours: float | None,
+    ) -> StepUpConfig:
+        resolved_type = self._normalize_step_up_type(step_up_type or self.step_up_type)
+        base_value = step_up_value if step_up_value is not None else self.step_up_value
+        decimal_value = base_value if isinstance(base_value, Decimal) else Decimal(str(base_value))
+        interval_hours = float(
+            step_up_interval_hours
+            if step_up_interval_hours is not None
+            else self.step_up_interval_hours
+        )
+        interval = timedelta(hours=interval_hours)
+        return StepUpConfig(type=resolved_type, value=decimal_value, interval=interval)
 
     def _enforce_minimum(self, new_price: Decimal, sku: Sku) -> Decimal:
         return max(new_price, sku.min_price)
@@ -56,35 +112,53 @@ class PricingStrategy:
     def _enforce_daily_threshold(self, new_price: Decimal, sku: Sku) -> Decimal:
         if sku.last_updated_price is None:
             return new_price
-        threshold = Decimal(1 + self.max_daily_change_percent / 100)
+        threshold = Decimal("1") + (Decimal(str(self.max_daily_change_percent)) / Decimal("100"))
         max_allowed = sku.last_updated_price * threshold
         min_allowed = sku.last_updated_price / threshold
         return min(max(new_price, min_allowed), max_allowed)
 
-    def _step_up(self, sku: Sku) -> Decimal | None:
+    def _step_up(self, sku: Sku, config: StepUpConfig) -> Decimal | None:
         if not sku.last_updated_price:
             return None
-        if not sku.last_price_update or datetime.utcnow() - sku.last_price_update < self.step_up_interval:
+        if not sku.last_price_update:
             return None
-        target = sku.last_updated_price * Decimal(1 + self.step_up_percentage / 100)
-        return target
+        if datetime.utcnow() - sku.last_price_update < config.interval:
+            return None
+        if config.type is StepUpType.PERCENTAGE:
+            multiplier = Decimal("1") + (config.value / Decimal("100"))
+            return sku.last_updated_price * multiplier
+        return sku.last_updated_price + config.value
 
     def determine_price(
         self,
         sku: Sku,
         offers: list[CompetitorOffer],
         floor: FloorPriceRecord,
+        *,
+        step_up_type: StepUpType | str | None = None,
+        step_up_value: float | Decimal | None = None,
+        step_up_interval_hours: float | None = None,
     ) -> PriceComputation:
         context: dict[str, Any] = {
             "competitor_count": len(offers),
             "hold_buy_box": sku.hold_buy_box,
         }
+        step_up_config = self._build_step_up_config(
+            step_up_type, step_up_value, step_up_interval_hours
+        )
+        context["step_up"] = {
+            "type": step_up_config.type.value,
+            "value": float(step_up_config.value),
+            "interval_hours": step_up_config.interval.total_seconds() / 3600,
+        }
         # Default to maintain last price if no offers
         candidate_price = sku.last_updated_price or Decimal(str(floor.min_price))
         if sku.hold_buy_box:
-            step_up_price = self._step_up(sku)
-            context["step_up_candidate"] = float(step_up_price) if step_up_price else None
-            if step_up_price:
+            step_up_price = self._step_up(sku, step_up_config)
+            context["step_up_candidate"] = (
+                float(step_up_price) if step_up_price is not None else None
+            )
+            if step_up_price is not None:
                 candidate_price = max(candidate_price, step_up_price)
         else:
             # Find best competitor price
@@ -126,7 +200,11 @@ class Repricer:
         self.strategy = strategy or PricingStrategy()
 
     async def _fetch_skus(self, marketplace: Marketplace) -> list[Sku]:
-        result = await self.session.execute(select(Sku).where(Sku.marketplace_id == marketplace.id))
+        result = await self.session.execute(
+            select(Sku)
+            .options(selectinload(Sku.repricing_profile))
+            .where(Sku.marketplace_id == marketplace.id)
+        )
         return list(result.scalars().all())
 
     async def _fetch_offers(self, marketplace_id: str, asins: list[str]) -> dict[str, list[CompetitorOffer]]:
@@ -147,6 +225,33 @@ class Repricer:
                 )
             offers[asin] = offer_list
         return offers
+
+    def _step_up_overrides(self, sku: Sku) -> dict[str, Any]:
+        overrides: dict[str, Any] = {}
+        profile = getattr(sku, "repricing_profile", None)
+        if profile is not None:
+            if isinstance(profile, dict):
+                sources = [profile]
+            else:
+                sources = [
+                    {
+                        "step_up_type": getattr(profile, "step_up_type", None),
+                        "step_up_value": getattr(profile, "step_up_value", None),
+                        "step_up_interval_hours": getattr(profile, "step_up_interval_hours", None),
+                    }
+                ]
+            for source in sources:
+                for key in ("step_up_type", "step_up_value", "step_up_interval_hours"):
+                    value = source.get(key)
+                    if value is not None:
+                        overrides[key] = value
+        extra = getattr(sku, "profile_overrides", None)
+        if isinstance(extra, dict):
+            for key in ("step_up_type", "step_up_value", "step_up_interval_hours"):
+                value = extra.get(key)
+                if value is not None:
+                    overrides[key] = value
+        return overrides
 
     async def run_marketplace(self, marketplace_code: str) -> dict[str, Any]:
         run = RepricingRun(
@@ -215,8 +320,12 @@ class Repricer:
                             {"marketplace": marketplace_code},
                         )
                         continue
+                    overrides = self._step_up_overrides(sku)
                     computation = self.strategy.determine_price(
-                        sku, offers.get(sku.asin, []), floor
+                        sku,
+                        offers.get(sku.asin, []),
+                        floor,
+                        **overrides,
                     )
                     await self._apply_price(computation, marketplace)
                     if computation.new_price is not None:

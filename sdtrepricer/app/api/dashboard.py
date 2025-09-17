@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..core.config import settings
 from ..dependencies import get_db
 from ..models import Alert, Marketplace, Sku, SystemSetting
 from ..schemas import AlertPayload, DashboardPayload, MarketplaceMetrics, RepricerSettings, SystemHealth
@@ -59,24 +60,43 @@ async def get_dashboard(
             severity=alert.severity,
             created_at=alert.created_at,
             acknowledged=alert.acknowledged,
-            metadata=alert.metadata,
+            metadata=alert.metadata_payload,
         )
         for alert in alerts_rows
     ]
     settings_rows = (
-        await session.execute(select(SystemSetting).where(SystemSetting.key.in_({
-            "max_price_change_percent",
-            "step_up_percentage",
-            "step_up_interval_hours",
-        })))
+        await session.execute(
+            select(SystemSetting).where(
+                SystemSetting.key.in_(
+                    {
+                        "max_price_change_percent",
+                        "step_up_type",
+                        "step_up_value",
+                        "step_up_interval_hours",
+                        "step_up_percentage",
+                    }
+                )
+            )
+        )
     ).scalars().all()
     settings_map = {row.key: row.value for row in settings_rows}
     repricer_settings = RepricerSettings(
         max_price_change_percent=float(
             settings_map.get("max_price_change_percent", settings.max_price_change_percent)
         ),
-        step_up_percentage=float(settings_map.get("step_up_percentage", 2.0)),
-        step_up_interval_hours=int(settings_map.get("step_up_interval_hours", 6)),
+        step_up_type=str(
+            settings_map.get("step_up_type", settings.step_up_type)
+            or settings.step_up_type
+        ).lower(),
+        step_up_value=float(
+            settings_map.get(
+                "step_up_value",
+                settings_map.get("step_up_percentage", settings.step_up_value),
+            )
+        ),
+        step_up_interval_hours=float(
+            settings_map.get("step_up_interval_hours", settings.step_up_interval_hours)
+        ),
     )
     scheduler = getattr(request.app.state, "scheduler", None)
     health_details = {}

@@ -41,12 +41,19 @@
             <input type="number" step="0.1" name="max_price_change_percent" required />
           </label>
           <label>
-            Step-up percentage when holding Buy Box (%)
-            <input type="number" step="0.1" name="step_up_percentage" required />
+            Step-up type
+            <select name="step_up_type" required>
+              <option value="percentage">Percentage</option>
+              <option value="absolute">Absolute</option>
+            </select>
+          </label>
+          <label>
+            Step-up value
+            <input type="number" step="0.01" name="step_up_value" required />
           </label>
           <label>
             Step-up interval (hours)
-            <input type="number" name="step_up_interval_hours" required />
+            <input type="number" step="0.1" name="step_up_interval_hours" required />
           </label>
           <button type="submit">Update Settings</button>
         </form>
