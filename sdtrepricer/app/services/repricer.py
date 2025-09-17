@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -13,10 +13,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.config import settings
 from ..core.logging import logger
-from ..models import AlertSeverity, Marketplace, PriceEvent, RepricingRun, Sku
+from ..models import AlertSeverity, Marketplace, PriceEvent, RepricingRun, Sku, SystemSetting
 from .alerts import create_alert
 from .ftp_loader import FTPFeedLoader, FloorPriceRecord
 from .sp_api import SPAPIClient
+from .test_data import load_competitor_offers, load_floor_prices
 
 
 @dataclass
@@ -119,11 +120,23 @@ class Repricer:
         sp_api: SPAPIClient,
         ftp_loader: FTPFeedLoader,
         strategy: PricingStrategy | None = None,
+        test_mode: bool | None = None,
     ) -> None:
         self.session = session
         self.sp_api = sp_api
         self.ftp_loader = ftp_loader
         self.strategy = strategy or PricingStrategy()
+        self._test_mode_override = test_mode
+
+    async def _is_test_mode(self) -> bool:
+        if self._test_mode_override is not None:
+            return self._test_mode_override
+        setting = await self.session.scalar(
+            select(SystemSetting).where(SystemSetting.key == "test_mode")
+        )
+        if setting:
+            return setting.value.lower() in {"1", "true", "yes", "on"}
+        return settings.test_mode
 
     async def _fetch_skus(self, marketplace: Marketplace) -> list[Sku]:
         result = await self.session.execute(select(Sku).where(Sku.marketplace_id == marketplace.id))
@@ -149,10 +162,11 @@ class Repricer:
         return offers
 
     async def run_marketplace(self, marketplace_code: str) -> dict[str, Any]:
+        test_mode = await self._is_test_mode()
         run = RepricingRun(
             started_at=datetime.utcnow(),
             marketplace_id=0,
-            status="running",
+            status="test-running" if test_mode else "running",
         )
         result = {
             "processed": 0,
@@ -172,57 +186,94 @@ class Repricer:
             run.status = "empty"
             await self.session.commit()
             return result
-        if not self.ftp_loader.validate_freshness(marketplace_code):
-            await create_alert(
-                self.session,
-                f"FTP feed stale or missing for {marketplace_code}",
-                AlertSeverity.WARNING,
-            )
-        try:
-            floor_map = {record.sku: record for record in self.ftp_loader.load(marketplace_code)}
-        except FileNotFoundError:
-            await create_alert(
-                self.session,
-                f"FTP feed missing for {marketplace_code}",
-                AlertSeverity.CRITICAL,
-            )
-            run.status = "blocked"
-            await self.session.commit()
-            return result
-        batch_size = settings.repricing_batch_size
-        concurrency = max(1, settings.repricing_concurrency)
-        for window_start in range(0, len(skus), batch_size * concurrency):
-            window = skus[window_start : window_start + batch_size * concurrency]
-            tasks: list[tuple[list[Sku], asyncio.Task[dict[str, list[CompetitorOffer]]]]] = []
-            for idx in range(0, len(window), batch_size):
-                batch = window[idx : idx + batch_size]
-                task = asyncio.create_task(
-                    self._fetch_offers(marketplace.amazon_id, [sku.asin for sku in batch])
+        floor_map = {}
+        if test_mode:
+            floor_map = await load_floor_prices(self.session, marketplace_code)
+        if not floor_map:
+            if not self.ftp_loader.validate_freshness(marketplace_code):
+                await create_alert(
+                    self.session,
+                    f"FTP feed stale or missing for {marketplace_code}",
+                    AlertSeverity.WARNING,
                 )
-                tasks.append((batch, task))
-            for batch, task in tasks:
-                offers = await task
-                for sku in batch:
-                    result["processed"] += 1
-                    floor = floor_map.get(sku.sku)
-                    if not floor:
-                        logger.warning("Missing floor price for %s", sku.sku)
-                        result["errors"] += 1
-                        await create_alert(
-                            self.session,
-                            f"Missing floor price for SKU {sku.sku}",
-                            AlertSeverity.WARNING,
-                            {"marketplace": marketplace_code},
-                        )
-                        continue
-                    computation = self.strategy.determine_price(
-                        sku, offers.get(sku.asin, []), floor
+            try:
+                floor_map = {record.sku: record for record in self.ftp_loader.load(marketplace_code)}
+            except FileNotFoundError:
+                await create_alert(
+                    self.session,
+                    f"FTP feed missing for {marketplace_code}",
+                    AlertSeverity.CRITICAL,
+                )
+                run.status = "blocked"
+                await self.session.commit()
+                return result
+        if test_mode:
+            uploaded_offers = await load_competitor_offers(self.session, marketplace_code)
+            offer_map: dict[str, list[CompetitorOffer]] = {
+                asin: [
+                    CompetitorOffer(
+                        seller_id=offer.seller_id,
+                        price=offer.price,
+                        is_buy_box=offer.is_buy_box,
+                        fulfillment_type=offer.fulfillment_type,
                     )
-                    await self._apply_price(computation, marketplace)
-                    if computation.new_price is not None:
-                        result["updated"] += 1
+                    for offer in offers
+                ]
+                for asin, offers in uploaded_offers.items()
+            }
+            for sku in skus:
+                result["processed"] += 1
+                floor = floor_map.get(sku.sku)
+                if not floor:
+                    logger.warning("Missing floor price for %s", sku.sku)
+                    result["errors"] += 1
+                    await create_alert(
+                        self.session,
+                        f"Missing floor price for SKU {sku.sku}",
+                        AlertSeverity.WARNING,
+                        {"marketplace": marketplace_code},
+                    )
+                    continue
+                offers = offer_map.get(sku.asin, [])
+                computation = self.strategy.determine_price(sku, offers, floor)
+                await self._apply_price(computation, marketplace, True, offers)
+                if computation.new_price is not None:
+                    result["updated"] += 1
+        else:
+            batch_size = settings.repricing_batch_size
+            concurrency = max(1, settings.repricing_concurrency)
+            for window_start in range(0, len(skus), batch_size * concurrency):
+                window = skus[window_start : window_start + batch_size * concurrency]
+                tasks: list[tuple[list[Sku], asyncio.Task[dict[str, list[CompetitorOffer]]]]] = []
+                for idx in range(0, len(window), batch_size):
+                    batch = window[idx : idx + batch_size]
+                    task = asyncio.create_task(
+                        self._fetch_offers(marketplace.amazon_id, [sku.asin for sku in batch])
+                    )
+                    tasks.append((batch, task))
+                for batch, task in tasks:
+                    offers = await task
+                    for sku in batch:
+                        result["processed"] += 1
+                        floor = floor_map.get(sku.sku)
+                        if not floor:
+                            logger.warning("Missing floor price for %s", sku.sku)
+                            result["errors"] += 1
+                            await create_alert(
+                                self.session,
+                                f"Missing floor price for SKU {sku.sku}",
+                                AlertSeverity.WARNING,
+                                {"marketplace": marketplace_code},
+                            )
+                            continue
+                        computation = self.strategy.determine_price(
+                            sku, offers.get(sku.asin, []), floor
+                        )
+                        await self._apply_price(computation, marketplace, False, offers.get(sku.asin, []))
+                        if computation.new_price is not None:
+                            result["updated"] += 1
         run.completed_at = datetime.utcnow()
-        run.status = "completed"
+        run.status = "test-completed" if test_mode else "completed"
         run.processed = result["processed"]
         run.updated = result["updated"]
         run.errors = result["errors"]
@@ -230,14 +281,37 @@ class Repricer:
         logger.info("Completed repricing %s: %s", marketplace_code, result)
         return result
 
-    async def _apply_price(self, computation: PriceComputation, marketplace: Marketplace) -> None:
+    async def _apply_price(
+        self,
+        computation: PriceComputation,
+        marketplace: Marketplace,
+        test_mode: bool,
+        offers: list[CompetitorOffer],
+    ) -> None:
         sku = computation.sku
         if computation.new_price is None:
             return
-        if sku.last_updated_price == computation.new_price:
+        if not test_mode and sku.last_updated_price == computation.new_price:
             return
         previous_price = sku.last_updated_price
         previous_business_price = sku.last_updated_business_price
+        if test_mode:
+            event = PriceEvent(
+                sku_id=sku.id,
+                created_at=datetime.utcnow(),
+                old_price=previous_price,
+                new_price=computation.new_price,
+                old_business_price=previous_business_price,
+                new_business_price=computation.new_business_price,
+                reason="repricer-test",
+                context={
+                    "mode": "test",
+                    "offers": [asdict(offer) for offer in offers],
+                    "computation": computation.context,
+                },
+            )
+            self.session.add(event)
+            return
         payload = await self.sp_api.submit_price_update(
             marketplace.amazon_id,
             sku.sku,
