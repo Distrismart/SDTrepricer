@@ -5,7 +5,7 @@ from decimal import Decimal
 
 import pytest
 from fastapi import FastAPI
-from httpx import AsyncClient
+from httpx import ASGITransport, AsyncClient
 
 from sdtrepricer.app.api import api_router
 from sdtrepricer.app.dependencies import get_db
@@ -53,8 +53,8 @@ async def test_dashboard_endpoint(db_session):
 
     class StubScheduler:
         def __init__(self) -> None:
-            self.last_runs = {"DE": datetime.utcnow() - timedelta(minutes=5)}
-            self.stats = {"DE": {"updated": 1, "processed": 10}}
+            self.last_runs = {"DE:all": datetime.utcnow() - timedelta(minutes=5)}
+            self.stats = {"DE:all": {"updated": 1, "processed": 10}}
 
     app.state.scheduler = StubScheduler()
 
@@ -63,7 +63,7 @@ async def test_dashboard_endpoint(db_session):
 
     app.dependency_overrides[get_db] = override_get_db
 
-    async with AsyncClient(app=app, base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.get("/api/metrics/dashboard")
     assert response.status_code == 200
     payload = response.json()

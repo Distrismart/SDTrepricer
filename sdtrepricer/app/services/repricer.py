@@ -15,7 +15,9 @@ from sqlalchemy.orm import selectinload
 
 from ..core.config import settings
 from ..core.logging import logger
-from ..models import AlertSeverity, Marketplace, PriceEvent, RepricingRun, Sku, SystemSetting
+
+from ..models import AlertSeverity, Marketplace, PriceEvent, RepricingProfile, RepricingRun, Sku
+
 from .alerts import create_alert
 from .ftp_loader import FTPFeedLoader, FloorPriceRecord
 from .sp_api import SPAPIClient
@@ -65,47 +67,22 @@ class PricingStrategy:
         step_up_value: float | Decimal | None = None,
         step_up_interval_hours: float | None = None,
         max_daily_change_percent: float | None = None,
+        undercut_percent: float = 0.5,
+        min_margin_percent: float = 0.0,
     ) -> None:
-        self.step_up_type = self._normalize_step_up_type(step_up_type or settings.step_up_type)
-        base_value = step_up_value if step_up_value is not None else settings.step_up_value
-        self.step_up_value = base_value if isinstance(base_value, Decimal) else Decimal(str(base_value))
-        interval_hours = float(
-            step_up_interval_hours
-            if step_up_interval_hours is not None
-            else settings.step_up_interval_hours
-        )
-        self.step_up_interval_hours = interval_hours
-        self.step_up_interval = timedelta(hours=interval_hours)
+
+        self.step_up_percentage = step_up_percentage
+        self.step_up_interval = timedelta(hours=step_up_interval_hours)
+
         self.max_daily_change_percent = (
             max_daily_change_percent
             if max_daily_change_percent is not None
             else settings.max_price_change_percent
         )
 
-    def _normalize_step_up_type(self, value: StepUpType | str) -> StepUpType:
-        if isinstance(value, StepUpType):
-            return value
-        try:
-            return StepUpType(str(value).lower())
-        except ValueError as exc:  # pragma: no cover - defensive
-            raise ValueError(f"Unsupported step-up type: {value}") from exc
+        self.undercut_percent = undercut_percent
+        self.min_margin_percent = min_margin_percent
 
-    def _build_step_up_config(
-        self,
-        step_up_type: StepUpType | str | None,
-        step_up_value: float | Decimal | None,
-        step_up_interval_hours: float | None,
-    ) -> StepUpConfig:
-        resolved_type = self._normalize_step_up_type(step_up_type or self.step_up_type)
-        base_value = step_up_value if step_up_value is not None else self.step_up_value
-        decimal_value = base_value if isinstance(base_value, Decimal) else Decimal(str(base_value))
-        interval_hours = float(
-            step_up_interval_hours
-            if step_up_interval_hours is not None
-            else self.step_up_interval_hours
-        )
-        interval = timedelta(hours=interval_hours)
-        return StepUpConfig(type=resolved_type, value=decimal_value, interval=interval)
 
     def _enforce_minimum(self, new_price: Decimal, sku: Sku) -> Decimal:
         return max(new_price, sku.min_price)
@@ -118,7 +95,17 @@ class PricingStrategy:
         min_allowed = sku.last_updated_price / threshold
         return min(max(new_price, min_allowed), max_allowed)
 
-    def _step_up(self, sku: Sku, config: StepUpConfig) -> Decimal | None:
+
+    def _apply_margin_policy(self, new_price: Decimal, floor: FloorPriceRecord) -> Decimal:
+        if self.min_margin_percent <= 0:
+            return new_price
+        baseline = Decimal(str(floor.min_price))
+        margin_ratio = Decimal("1") + Decimal(str(self.min_margin_percent)) / Decimal("100")
+        required = baseline * margin_ratio
+        return max(new_price, required)
+
+    def _step_up(self, sku: Sku) -> Decimal | None:
+
         if not sku.last_updated_price:
             return None
         if not sku.last_price_update:
@@ -143,6 +130,7 @@ class PricingStrategy:
         context: dict[str, Any] = {
             "competitor_count": len(offers),
             "hold_buy_box": sku.hold_buy_box,
+            "undercut_percent": self.undercut_percent,
         }
         step_up_config = self._build_step_up_config(
             step_up_type, step_up_value, step_up_interval_hours
@@ -168,8 +156,11 @@ class PricingStrategy:
                 best_competitor = min(competitor_prices)
                 candidate_price = Decimal(str(best_competitor))
                 context["target_competitor"] = best_competitor
-                candidate_price *= Decimal("0.995")  # slight undercut by 0.5%
+                undercut_ratio = Decimal(str(self.undercut_percent)) / Decimal("100")
+                undercut_ratio = max(Decimal("0"), min(undercut_ratio, Decimal("1")))
+                candidate_price *= Decimal("1") - undercut_ratio
         candidate_price = max(candidate_price, Decimal(str(floor.min_price)))
+        candidate_price = self._apply_margin_policy(candidate_price, floor)
         candidate_price = self._enforce_minimum(candidate_price, sku)
         candidate_price = self._enforce_daily_threshold(candidate_price, sku)
         business_price = (
@@ -212,13 +203,35 @@ class Repricer:
             return setting.value.lower() in {"1", "true", "yes", "on"}
         return settings.test_mode
 
-    async def _fetch_skus(self, marketplace: Marketplace) -> list[Sku]:
-        result = await self.session.execute(
+
+    async def _fetch_skus(
+        self, marketplace: Marketplace, profile_id: int | None = None
+    ) -> list[Sku]:
+        stmt = (
             select(Sku)
-            .options(selectinload(Sku.repricing_profile))
             .where(Sku.marketplace_id == marketplace.id)
+            .options(selectinload(Sku.profile))
         )
+        if profile_id is not None:
+            stmt = stmt.where(Sku.profile_id == profile_id)
+        result = await self.session.execute(stmt)
+
         return list(result.scalars().all())
+
+    def _strategy_for_profile(self, profile: RepricingProfile | None) -> PricingStrategy:
+        if profile is None:
+            return self.strategy
+        aggressiveness = profile.aggressiveness or {}
+        margin_policy = profile.margin_policy or {}
+        undercut = float(aggressiveness.get("undercut_percent", self.strategy.undercut_percent))
+        min_margin = float(margin_policy.get("min_margin_percent", self.strategy.min_margin_percent))
+        return PricingStrategy(
+            step_up_percentage=float(profile.step_up_percentage or 0),
+            step_up_interval_hours=profile.step_up_interval_hours,
+            max_daily_change_percent=float(profile.price_change_limit_percent or 0),
+            undercut_percent=undercut,
+            min_margin_percent=min_margin,
+        )
 
     async def _fetch_offers(self, marketplace_id: str, asins: list[str]) -> dict[str, list[CompetitorOffer]]:
         offers: dict[str, list[CompetitorOffer]] = {asin: [] for asin in asins}
@@ -239,35 +252,11 @@ class Repricer:
             offers[asin] = offer_list
         return offers
 
-    def _step_up_overrides(self, sku: Sku) -> dict[str, Any]:
-        overrides: dict[str, Any] = {}
-        profile = getattr(sku, "repricing_profile", None)
-        if profile is not None:
-            if isinstance(profile, dict):
-                sources = [profile]
-            else:
-                sources = [
-                    {
-                        "step_up_type": getattr(profile, "step_up_type", None),
-                        "step_up_value": getattr(profile, "step_up_value", None),
-                        "step_up_interval_hours": getattr(profile, "step_up_interval_hours", None),
-                    }
-                ]
-            for source in sources:
-                for key in ("step_up_type", "step_up_value", "step_up_interval_hours"):
-                    value = source.get(key)
-                    if value is not None:
-                        overrides[key] = value
-        extra = getattr(sku, "profile_overrides", None)
-        if isinstance(extra, dict):
-            for key in ("step_up_type", "step_up_value", "step_up_interval_hours"):
-                value = extra.get(key)
-                if value is not None:
-                    overrides[key] = value
-        return overrides
 
-    async def run_marketplace(self, marketplace_code: str) -> dict[str, Any]:
-        test_mode = await self._is_test_mode()
+    async def run_marketplace(
+        self, marketplace_code: str, profile_id: int | None = None
+    ) -> dict[str, Any]:
+
         run = RepricingRun(
             started_at=datetime.utcnow(),
             marketplace_id=0,
@@ -278,6 +267,7 @@ class Repricer:
             "updated": 0,
             "errors": 0,
             "marketplace": marketplace_code,
+            "profile_id": profile_id,
         }
         marketplace = await self.session.scalar(select(Marketplace).where(Marketplace.code == marketplace_code))
         if marketplace is None:
@@ -286,125 +276,77 @@ class Repricer:
         run.marketplace_id = marketplace.id
         self.session.add(run)
         await self.session.flush()
-        skus = await self._fetch_skus(marketplace)
+        skus = await self._fetch_skus(marketplace, profile_id=profile_id)
         if not skus:
             run.status = "empty"
             await self.session.commit()
             return result
-        floor_map = {}
-        if test_mode:
-            floor_map = await load_floor_prices(self.session, marketplace_code)
-        if not floor_map:
-            if not self.ftp_loader.validate_freshness(marketplace_code):
-                await create_alert(
-                    self.session,
-                    f"FTP feed stale or missing for {marketplace_code}",
-                    AlertSeverity.WARNING,
+
+        if not self.ftp_loader.validate_freshness(marketplace_code):
+            await create_alert(
+                self.session,
+                f"FTP feed stale or missing for {marketplace_code}",
+                AlertSeverity.WARNING,
+            )
+        try:
+            floor_map = {record.sku: record for record in self.ftp_loader.load(marketplace_code)}
+        except FileNotFoundError:
+            await create_alert(
+                self.session,
+                f"FTP feed missing for {marketplace_code}",
+                AlertSeverity.CRITICAL,
+            )
+            run.status = "blocked"
+            await self.session.commit()
+            return result
+        batch_size = settings.repricing_batch_size
+        concurrency = max(1, settings.repricing_concurrency)
+        strategy_cache: dict[int | None, PricingStrategy] = {None: self.strategy}
+        processed_profiles: set[int] = set()
+        for window_start in range(0, len(skus), batch_size * concurrency):
+            window = skus[window_start : window_start + batch_size * concurrency]
+            tasks: list[tuple[list[Sku], asyncio.Task[dict[str, list[CompetitorOffer]]]]] = []
+            for idx in range(0, len(window), batch_size):
+                batch = window[idx : idx + batch_size]
+                task = asyncio.create_task(
+                    self._fetch_offers(marketplace.amazon_id, [sku.asin for sku in batch])
                 )
-            try:
-                floor_map = {
-                    record.sku: record for record in self.ftp_loader.load(marketplace_code)
-                }
-
-            except FileNotFoundError:
-                await create_alert(
-                    self.session,
-                    f"FTP feed missing for {marketplace_code}",
-                    AlertSeverity.CRITICAL,
-                )
-                run.status = "blocked"
-                await self.session.commit()
-                return result
-        if test_mode:
-            uploaded_offers = await load_competitor_offers(self.session, marketplace_code)
-            offer_map: dict[str, list[CompetitorOffer]] = {
-                asin: [
-                    CompetitorOffer(
-                        seller_id=offer.seller_id,
-                        price=offer.price,
-                        is_buy_box=offer.is_buy_box,
-                        fulfillment_type=offer.fulfillment_type,
-
-                    )
-                    for offer in offers
-                ]
-                for asin, offers in uploaded_offers.items()
-            }
-            for sku in skus:
-                result["processed"] += 1
-                floor = floor_map.get(sku.sku)
-                if not floor:
-                    logger.warning("Missing floor price for %s", sku.sku)
-                    result["errors"] += 1
-                    await create_alert(
-                        self.session,
-                        f"Missing floor price for SKU {sku.sku}",
-                        AlertSeverity.WARNING,
-                        {"marketplace": marketplace_code},
-                    )
-                    continue
-                offers = offer_map.get(sku.asin, [])
-                overrides = self._step_up_overrides(sku)
-                computation = self.strategy.determine_price(
-                    sku,
-                    offers,
-                    floor,
-                    **overrides,
-                )
-
-                await self._apply_price(computation, marketplace, True, offers)
-                if computation.new_price is not None:
-                    result["updated"] += 1
-        else:
-            batch_size = settings.repricing_batch_size
-            concurrency = max(1, settings.repricing_concurrency)
-            for window_start in range(0, len(skus), batch_size * concurrency):
-                window = skus[window_start : window_start + batch_size * concurrency]
-                tasks: list[tuple[list[Sku], asyncio.Task[dict[str, list[CompetitorOffer]]]]] = []
-                for idx in range(0, len(window), batch_size):
-                    batch = window[idx : idx + batch_size]
-                    task = asyncio.create_task(
-                        self._fetch_offers(marketplace.amazon_id, [sku.asin for sku in batch])
-                    )
-                    tasks.append((batch, task))
-                for batch, task in tasks:
-                    offers = await task
-                    for sku in batch:
-                        result["processed"] += 1
-                        floor = floor_map.get(sku.sku)
-                        if not floor:
-                            logger.warning("Missing floor price for %s", sku.sku)
-                            result["errors"] += 1
-                            await create_alert(
-                                self.session,
-                                f"Missing floor price for SKU {sku.sku}",
-                                AlertSeverity.WARNING,
-                                {"marketplace": marketplace_code},
-                            )
-                            continue
-
-                        overrides = self._step_up_overrides(sku)
-                        computation = self.strategy.determine_price(
-                            sku,
-                            offers.get(sku.asin, []),
-                            floor,
-                            **overrides,
+                tasks.append((batch, task))
+            for batch, task in tasks:
+                offers = await task
+                for sku in batch:
+                    result["processed"] += 1
+                    floor = floor_map.get(sku.sku)
+                    if not floor:
+                        logger.warning("Missing floor price for %s", sku.sku)
+                        result["errors"] += 1
+                        await create_alert(
+                            self.session,
+                            f"Missing floor price for SKU {sku.sku}",
+                            AlertSeverity.WARNING,
+                            {"marketplace": marketplace_code},
                         )
-                        await self._apply_price(
-                            computation,
-                            marketplace,
-                            False,
-                            offers.get(sku.asin, []),
-                        )
+                        continue
+                    profile_key = sku.profile_id
+                    strategy = strategy_cache.get(profile_key)
+                    if strategy is None:
+                        strategy = self._strategy_for_profile(sku.profile)
+                        strategy_cache[profile_key] = strategy
+                    computation = strategy.determine_price(sku, offers.get(sku.asin, []), floor)
+                    await self._apply_price(computation, marketplace)
+                    if computation.new_price is not None:
+                        result["updated"] += 1
+                    if profile_key is not None:
+                        processed_profiles.add(profile_key)
 
-                        if computation.new_price is not None:
-                            result["updated"] += 1
         run.completed_at = datetime.utcnow()
         run.status = "test-completed" if test_mode else "completed"
         run.processed = result["processed"]
         run.updated = result["updated"]
         run.errors = result["errors"]
         await self.session.commit()
+        if processed_profiles:
+            result["profiles_processed"] = sorted(processed_profiles)
         logger.info("Completed repricing %s: %s", marketplace_code, result)
         return result
 

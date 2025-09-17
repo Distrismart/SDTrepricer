@@ -138,7 +138,7 @@ async def get_dashboard(
     if scheduler:
         health_details = {
             "last_runs": {k: v.isoformat() for k, v in scheduler.last_runs.items()},
-            "stats": scheduler.stats,
+            "stats": {k: v for k, v in scheduler.stats.items()},
         }
     health = SystemHealth(status="ok", timestamp=datetime.utcnow(), details=health_details)
     return DashboardPayload(
