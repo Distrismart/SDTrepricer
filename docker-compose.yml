@@ -1,33 +1,35 @@
-version: '3.9'
-
 services:
   db:
     image: postgres:15
+    container_name: sdtrepricer_db
     environment:
       POSTGRES_USER: repricer
       POSTGRES_PASSWORD: repricer
       POSTGRES_DB: repricer
     volumes:
       - db-data:/var/lib/postgresql/data
+    restart: unless-stopped
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U repricer']
+      test: ["CMD-SHELL", "pg_isready -U repricer"]
       interval: 10s
       timeout: 5s
       retries: 5
 
   app:
     build: .
+    container_name: sdtrepricer_app
     command: uvicorn sdtrepricer.app:app --host 0.0.0.0 --port 8000 --reload
     volumes:
-      - ./:/app
+      - ./app:/app
     environment:
       DATABASE_URL: postgresql+asyncpg://repricer:repricer@db:5432/repricer
       FTP_ROOT: /app/ftp_feeds
     ports:
-      - '8000:8000'
+      - "8000:8000"
     depends_on:
       db:
         condition: service_healthy
+    restart: unless-stopped
 
 volumes:
   db-data:
