@@ -1,6 +1,42 @@
+# Byte-compiled / cache
 __pycache__/
 *.py[cod]
+*$py.class
+
+# Virtual environments
 venv/
+.venv/
+
+# Environment files
 .env
-pip-wheel-metadata/
+.env.*
+
+# Distribution / packaging
+build/
+dist/
 *.egg-info/
+pip-wheel-metadata/
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# Migrations (optional: keep if you want versioned migrations in git)
+migrations/versions/
+
+# IDE / editor stuff
+.vscode/
+.idea/
+
+# Logs
+*.log
